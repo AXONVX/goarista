@@ -15,3 +15,7 @@ var Addresses = flag.String("kafkaaddrs", "localhost:9092", "kafka's comma-separ
 
 // Topic is the flag for kafka's topic
 var Topic = flag.String("kafkatopic", filepath.Base(os.Args[0]), "kafka's topic")
+
+// TopicConfig is the flag for the topic/subscription topic
+var TopicConfig = flag.String("kafkatopicfile", "",
+		"Path to kafka topic config file. This is a JSON file that maps the subscriptions to topics. If this flag is parsed, kakfatopic & subscribe flags are ignored")

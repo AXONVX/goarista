@@ -7,6 +7,7 @@ package gnmi
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/aristanetworks/goarista/elasticsearch"
@@ -54,8 +55,38 @@ func NewEncoder(topic string, key sarama.Encoder, dataset string) kafka.MessageE
 	}
 }
 
-func (e *elasticsearchMessageEncoder) Encode(message proto.Message) ([]*sarama.ProducerMessage,
-	error) {
+// Split a timestamp into seconds and nanoseconds components - Max slicing length is 10
+func splitTimestamp(timestamp uint64, lenSlice int) (int64, int64, error) {
+	var secTimestamp int64		// Note max secTimestamp length is 10
+	var nsecTimestamp int64		// Note max secTimestamp length is 9
+	var err error
+
+	timestampString := strconv.FormatUint(timestamp, 10)
+	lenTimestamp := len(timestampString)
+
+	if lenSlice > lenTimestamp || lenSlice > 10 {
+		return 0, 0, fmt.Errorf("Slicing length is greater than the timestamp length or 10")
+	} else if lenTimestamp > 19 {
+		return 0, 0, fmt.Errorf("Timestamp length is too long (Greater than 19)")
+	}
+
+	secTimestamp, err = strconv.ParseInt(timestampString[:lenSlice], 10, 0)
+	if err != nil {
+		return 0, 0, err
+	}
+	if lenTimestamp > 10 && lenSlice == 10 {
+		lenSliceNew := len(timestampString)-lenSlice
+		nsecTimestamp, err = strconv.ParseInt(timestampString[len(timestampString)-lenSliceNew:], 10, 0)
+		if err != nil {
+			return 0, 0, err
+		}
+	} else {
+		nsecTimestamp = 0
+	}
+	return secTimestamp, nsecTimestamp, err
+}
+
+func (e *elasticsearchMessageEncoder) Encode(message proto.Message) ([]*sarama.ProducerMessage, error) {
 	response, ok := message.(*gnmi.SubscribeResponse)
 	if !ok {
 		return nil, UnhandledMessageError{message: message}
@@ -76,11 +107,29 @@ func (e *elasticsearchMessageEncoder) Encode(message proto.Message) ([]*sarama.P
 		}
 		glog.V(9).Infof("kafka: %s", updateJSON)
 
-		messages[i] = &sarama.ProducerMessage{
+		// Derive the timestamp value within sarama.ProducerMessage (Either timestamp collected from message or system derived)
+		var kafkaTimestamp time.Time
+		if timestamp, ok := updateMap["Timestamp"]; ok {
+			secTimestamp, nsecTimestamp, err := splitTimestamp(timestamp.(uint64), 10)
+			if err != nil {
+				kafkaTimestamp = time.Now()
+				glog.V(9).Infof("Using system time for Timestamp")
+			} else {
+				kafkaTimestamp = time.Unix(secTimestamp, nsecTimestamp)
+				glog.V(9).Infof("Using message embedded time for Timestamp")
+			}
+		} else {
+			kafkaTimestamp = time.Now()
+			glog.V(9).Infof("Using system time for Timestamp")
+		}
+		glog.V(9).Infof("timestamp: %s", kafkaTimestamp)
+
+		messages[i] = &sarama.ProducerMessage {
 			Topic:    e.topic,
 			Key:      e.key,
 			Value:    sarama.ByteEncoder(updateJSON),
 			Metadata: kafka.Metadata{StartTime: time.Unix(0, update.Timestamp), NumMessages: 1},
+			Timestamp: kafkaTimestamp,
 		}
 	}
 	return messages, nil
