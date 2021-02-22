@@ -45,6 +45,7 @@ func New(encoder kafka.MessageEncoder,
 		kafkaConfig.Producer.Compression = sarama.CompressionSnappy
 		kafkaConfig.Producer.Return.Successes = true
 		kafkaConfig.Producer.RequiredAcks = sarama.WaitForAll
+		kafkaConfig.Version = sarama.V2_6_0_0
 	}
 
 	kafkaProducer, err := sarama.NewAsyncProducer(kafkaAddresses, kafkaConfig)

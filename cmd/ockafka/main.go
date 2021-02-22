@@ -8,8 +8,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io/ioutil"
+	"os"
 	"strings"
 	"sync"
 
@@ -44,6 +47,20 @@ func main() {
 	ctx = client.NewContext(ctx, config)
 	grpcAddrs := strings.Split(config.Addr, ",")
 
+	topicSub := make(map[string][]string)
+	if *kafka.TopicConfig != "" {
+		jsonTopicFile, fileError := os.Open(*kafka.TopicConfig)
+		if fileError != nil {
+			fmt.Println(fileError)
+		}
+		defer jsonTopicFile.Close()
+
+		jsonTopicByte, _ := ioutil.ReadAll(jsonTopicFile)
+		json.Unmarshal([]byte(jsonTopicByte), &topicSub)
+	} else {
+		topicSub[*kafka.Topic] = subscriptions
+	}
+
 	var keys []string
 	var err error
 	if *keysFlag == "" {
@@ -60,39 +77,43 @@ func main() {
 	addresses := strings.Split(*kafka.Addresses, ",")
 	wg := new(sync.WaitGroup)
 	for i, grpcAddr := range grpcAddrs {
-		key := keys[i]
-		p, err := newProducer(addresses, *kafka.Topic, key, grpcAddr)
-		if err != nil {
-			glog.Fatal(err)
-		} else {
-			glog.Infof("Initialized Kafka producer for %s", grpcAddr)
-		}
-		wg.Add(1)
-		go func() {
-			p.Start()
-			defer p.Stop()
-			respChan := make(chan *pb.SubscribeResponse)
-			errChan := make(chan error)
-			c, err := client.Dial(config)
+		for topic, subscriptionList := range topicSub {
+			glog.Infof("Kafka Topic: %s", topic)
+			key := keys[i]
+			p, err := newProducer(addresses, topic, key, grpcAddr)
 			if err != nil {
 				glog.Fatal(err)
+			} else {
+				glog.Infof("Initialized Kafka producer for %s", grpcAddr)
+				glog.Infof("")
 			}
-			subscribeOptions := &client.SubscribeOptions{
-				Paths: client.SplitPaths(subscriptions),
-			}
-			go client.Subscribe(ctx, c, subscribeOptions, respChan, errChan)
-			for {
-				select {
-				case resp, open := <-respChan:
-					if !open {
-						return
-					}
-					p.Write(resp)
-				case err := <-errChan:
+			wg.Add(1)
+			go func(subscriptionList []string) {
+				p.Start()
+				defer p.Stop()
+				respChan := make(chan *pb.SubscribeResponse)
+				errChan := make(chan error)
+				c, err := client.Dial(config)
+				if err != nil {
 					glog.Fatal(err)
 				}
-			}
-		}()
+				subscribeOptions := &client.SubscribeOptions{
+					Paths: client.SplitPaths(subscriptionList),
+				}
+				go client.Subscribe(ctx, c, subscribeOptions, respChan, errChan)
+				for {
+					select {
+					case resp, open := <-respChan:
+						if !open {
+							return
+						}
+						p.Write(resp)
+					case err := <-errChan:
+						glog.Fatal(err)
+					}
+				}
+			}(subscriptionList)
+		}
 	}
 	wg.Wait()
 }
